@@ -1,3 +1,4 @@
+# 秘密与凭证
 .env
 .env.*
 !.env.example
@@ -12,7 +13,30 @@ secrets.*
 credentials*.json
 .npmrc
 .pypirc
+
+# 语言工具链产物
 node_modules/
 __pycache__/
 .venv/
 venv/
+/target
+
+# 原始语料（体积大，由 tools/fetch_data.sh 重新下载）
+/data/raw/
+/data/intermediate/
+
+# 构建产物：WASM 与词典由 make 生成，不入库
+/dist/
+/web/passmeter_wasm.wasm
+/web/dict2.bin
+/data/generated/dict1.bin
+/data/generated/dict2.bin
+/data/generated/syllables.bin
+/data/generated/pinyin_gloss.txt
+/data/generated/stats.json
+
+# 对比测试用的第三方实现（由 tools/fetch_zxcvbn.sh 下载）
+/vendor/
+
+# 泄露库：92 MB 派生产物，由 tools/build_breach_db.py 生成
+/data/generated/breach/

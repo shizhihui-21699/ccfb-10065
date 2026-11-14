@@ -1,0 +1,17 @@
+[package]
+name = "passmeter-server"
+description = "k-匿名泄露库查询服务与静态站点托管"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+passmeter-core = { workspace = true }
+
+[[bin]]
+name = "passmeter-server"
+path = "src/main.rs"
+
+[lints]
+workspace = true

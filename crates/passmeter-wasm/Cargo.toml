@@ -1,0 +1,19 @@
+[package]
+name = "passmeter-wasm"
+description = "passmeter 的 WebAssembly 绑定（裸 C ABI，不依赖 wasm-bindgen）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+passmeter-core = { workspace = true }
+
+[lib]
+crate-type = ["cdylib"]
+name = "passmeter_wasm"
+path = "src/lib.rs"
+
+
+[lints]
+workspace = true

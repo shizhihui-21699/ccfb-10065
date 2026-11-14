@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/passmeter-core",
+    "crates/passmeter-wasm",
+    "crates/passmeter-server",
+]
+
+# 保留索引式循环与显式 push：它们出现在 DP 与哈希表的紧循环里，
+# 换成 iterator 会牺牲可读性而性能无实质改善。
+[workspace.lints.clippy]
+needless_range_loop = "allow"
+explicit_counter_loop = "allow"
+vec_init_then_push = "allow"
+manual_div_ceil = "allow"
+collapsible_if = "allow"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["passmeter authors"]
+
+[workspace.dependencies]
+passmeter-core = { path = "crates/passmeter-core" }
+
+# 发布构建：体积小、无 panic 展开、牺牲少量运行时代价换取可预测性。
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "s"
+strip = "symbols"

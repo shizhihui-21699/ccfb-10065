@@ -1,0 +1,21 @@
+[package]
+name = "passmeter-core"
+description = "密码强度评估核心：模式匹配、猜测数估计、泄露库 k-匿名校验"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[features]
+default = ["embedded-data"]
+# 当其它 crate 自带数据表时（例如测试中构造小词典）可以关掉。
+embedded-data = []
+
+[lib]
+name = "passmeter_core"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

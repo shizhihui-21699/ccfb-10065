@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>口令强度评估</title>
+<!--
+  单文件页面：样式与脚本都内联，避免额外请求。
+  逻辑全部走 WASM，JS 只负责渲染——这样页面上看到的分段与
+  服务端 API 返回的分段必然一致。
+-->
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #262b36;
+    --text: #e6e8ec;
+    --muted: #8b93a3;
+    --weak: #e5484d;
+    --fair: #f5a524;
+    --good: #46a758;
+    --strong: #3e9ae0;
+    --accent: #7c6cf0;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f8fa; --panel: #ffffff; --border: #e2e5ea;
+      --text: #1a1d23; --muted: #6b7280;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 16px;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+
+  /* 输入框用等宽字体：口令里的相似字符要能分辨 */
+  #pw {
+    width: 100%; font: 16px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    padding: 12px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    outline: none; transition: border-color .15s;
+  }
+  #pw:focus { border-color: var(--accent); }
+
+  /* 分段可视化：与输入框严格对齐，逐字节高亮 */
+  .segments {
+    font: 16px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    padding: 12px 14px; border-radius: 8px; border: 1px dashed var(--border);
+    margin-top: 10px; min-height: 46px; white-space: pre-wrap; word-break: break-all;
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
+  }
+  .segments .seg { border-radius: 3px; padding: 1px 0; }
+  .segments .seg + .seg { margin-left: 1px; }
+  .segments .empty { color: var(--muted); font-family: system-ui, sans-serif; font-size: 13px; }
+
+  .meter { display: flex; gap: 4px; margin: 16px 0 8px; }
+  .meter i {
+    flex: 1; height: 6px; border-radius: 3px; background: var(--border);
+    transition: background .2s;
+  }
+  .verdict { display: flex; justify-content: space-between; align-items: baseline; }
+  .verdict b { font-size: 16px; }
+  .verdict span { color: var(--muted); font-size: 13px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-family: ui-monospace, Menlo, monospace; text-align: right; }
+  tr:last-child td { border-bottom: none; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  .advice { margin: 0; padding: 0; list-style: none; }
+  .advice li { padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .advice li:last-child { border-bottom: none; }
+  .advice .msg { font-weight: 550; }
+  .advice .act { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .advice .breach { color: var(--weak); }
+
+  .status { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .badge {
+    display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text);
+    margin-left: 6px; vertical-align: 1px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>口令强度评估</h1>
+  <div class="sub">
+    评估在本地 WASM 中完成，口令不会离开浏览器；
+    泄露查询只发送 SHA-1 的前 4 位十六进制（16 bit）。
+  </div>
+
+  <div class="card">
+    <label for="pw">输入口令</label>
+    <input id="pw" type="text" autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="在这里输入…">
+    <div class="segments" id="segments"><span class="empty">输入后会在下方逐段标出可预测的结构</span></div>
+
+    <div class="meter" id="meter"><i></i><i></i><i></i><i></i></div>
+    <div class="verdict">
+      <b id="verdict">—</b>
+      <span id="guesses"></span>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card">
+    <label>破解时间估计</label>
+    <table id="crack"><tbody></tbody></table>
+  </div>
+
+  <div class="card">
+    <label>改进建议</label>
+    <ul class="advice" id="advice"><li style="color:var(--muted)">输入口令后给出具体建议</li></ul>
+  </div>
+
+  <div class="card">
+    <label>匹配到的结构</label>
+    <table id="matches"><tbody></tbody></table>
+    <div class="legend" id="legend"></div>
+  </div>
+</div>
+
+<script type="module">
+import { PassMeter, humanizeSeconds } from './passmeter.js';
+
+// 每个模式的配色与中文名。与 Rust 的 Pattern::as_str 一一对应。
+const PATTERNS = {
+  dictionary:   { label: '词典词',   color: 'var(--weak)' },
+  spatial:      { label: '键盘走位', color: 'var(--fair)' },
+  repeat:       { label: '重复',     color: 'var(--fair)' },
+  sequence:     { label: '序列',     color: 'var(--good)' },
+  date:         { label: '日期',     color: 'var(--strong)' },
+  chinese_run:  { label: '中文段',   color: 'var(--accent)' },
+  bruteforce:   { label: '无模式',   color: 'var(--muted)' },
+};
+
+// 与 Rust 的 SCENARIOS 顺序一致
+const SCENARIOS = [
+  { label: '在线（严格限速）', note: '每小时 100 次' },
+  { label: '在线（无限速）',   note: '每秒 10 次' },
+  { label: '离线 · bcrypt',    note: '每秒 1 万次' },
+  { label: '离线 · 多卡 SHA-256', note: '每秒 100 亿次' },
+];
+
+const $ = (id) => document.getElementById(id);
+const input = $('pw');
+
+let meter = null;
+let breachCache = new Map();   // prefix -> Map(suffix -> count)
+let pending = null;            // 防抖后的评估任务
+let lastPrefix = null;
+
+/** 启动：加载 WASM，然后尝试加载二级词典。 */
+(async () => {
+  try {
+    meter = await PassMeter.load('./passmeter_wasm.wasm');
+    $('status').textContent = meter.hasTier2
+      ? '词典：一级 + 二级'
+      : '词典：一级（二级词典加载中…）';
+    // 二级词典不阻塞首屏：后台拉取，完成后静默升级
+    if (!meter.hasTier2) {
+      meter.loadTier2('./dict2.bin').then((ok) => {
+        $('status').textContent = ok ? '词典：一级 + 二级' : '词典：仅一级';
+      });
+    }
+  } catch (e) {
+    $('status').textContent = `WASM 加载失败：${e.message}`;
+    console.error(e);
+  }
+})();
+
+input.addEventListener('input', () => {
+  // 输入防抖：12ms 足以合并一次按键的重复事件，又不至于可感知
+  if (pending) cancelAnimationFrame(pending);
+  pending = requestAnimationFrame(render);
+});
+
+async function render() {
+  if (!meter) return;
+  const pw = input.value;
+  const r = meter.evaluate(pw);
+
+  renderSegments(pw, r);
+  renderMeter(r);
+  renderCrack(r);
+  renderMatches(r);
+  renderAdvice(r, pw);
+
+  // 泄露查询只在前缀变化时发起，避免每次按键都打服务端
+  if (pw.length > 0 && r.sha1Prefix !== lastPrefix) {
+    lastPrefix = r.sha1Prefix;
+    checkBreach(r.sha1Prefix, pw);
+  }
+}
+
+function renderSegments(pw, r) {
+  const box = $('segments');
+  box.textContent = '';
+  if (!pw) {
+    const s = document.createElement('span');
+    s.className = 'empty';
+    s.textContent = '输入后会在下方逐段标出可预测的结构';
+    box.append(s);
+    return;
+  }
+  for (const m of r.sequence) {
+    const info = PATTERNS[m.pattern] || PATTERNS.bruteforce;
+    const span = document.createElement('span');
+    span.className = 'seg';
+    span.textContent = pw.slice(m.start, m.end);
+    span.style.background = `color-mix(in srgb, ${info.color} 26%, transparent)`;
+    span.style.boxShadow = `inset 0 -2px 0 ${info.color}`;
+    span.title = `${info.label}：约 ${fmtGuesses(m.guesses)} 次猜测`;
+    box.append(span);
+  }
+}
+
+function renderMeter(r) {
+  const bars = $('meter').children;
+  const colors = ['var(--weak)', 'var(--weak)', 'var(--fair)', 'var(--good)', 'var(--strong)'];
+  for (let i = 0; i < bars.length; i++) {
+    bars[i].style.background = i < r.score + 1 ? colors[r.score] : 'var(--border)';
+  }
+  const names = ['极弱', '很弱', '中等', '较强', '很强'];
+  $('verdict').textContent = names[r.score] + (r.breach && r.breach.count > 0 ? '（已泄露）' : '');
+  $('guesses').textContent = `约 ${fmtGuesses(r.guesses)} 次猜测`;
+}
+
+function renderCrack(r) {
+  const tbody = $('crack').querySelector('tbody');
+  tbody.textContent = '';
+  SCENARIOS.forEach((s, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${s.label}<br><small style="color:var(--muted)">${s.note}</small></td>`
+      + `<td class="num">${humanizeSeconds(r.crackSeconds[i])}</td>`;
+    tbody.append(tr);
+  });
+}
+
+function renderMatches(r) {
+  const tbody = $('matches').querySelector('tbody');
+  tbody.textContent = '';
+  for (const m of r.sequence) {
+    const info = PATTERNS[m.pattern] || PATTERNS.bruteforce;
+    const tr = document.createElement('tr');
+    const extra = describeExtra(m);
+    tr.innerHTML = `<td><code>${escapeHtml(m.token)}</code></td>`
+      + `<td>${info.label}${extra}</td>`
+      + `<td class="num">${fmtGuesses(m.guesses)}</td>`;
+    tbody.append(tr);
+  }
+  const legend = $('legend');
+  legend.textContent = '';
+  for (const [, info] of Object.entries(PATTERNS)) {
+    const s = document.createElement('span');
+    s.innerHTML = `<i style="background:${info.color}"></i>${info.label}`;
+    legend.append(s);
+  }
+}
+
+function describeExtra(m) {
+  const parts = [];
+  if (m.source) parts.push(SOURCE_NAMES[m.source] || m.source);
+  if (m.rank) parts.push(`第 ${m.rank} 名`);
+  if (m.l33t) parts.push('字符替换');
+  if (m.reversed) parts.push('倒写');
+  if (m.year) parts.push(`${m.year} 年`);
+  if (m.turns) parts.push(`换向 ${m.turns} 次`);
+  return parts.length ? ` <small style="color:var(--muted)">${escapeHtml(parts.join(' · '))}</small>` : '';
+}
+
+const SOURCE_NAMES = {
+  pwned: '真实泄露口令',
+  en_common: '英文常见口令',
+  en_wiki: '英文常用词',
+  en_names: '英文姓名',
+  en_tv: '影视常用词',
+  en_zipf: '英文词频',
+  zh_words: '中文常用词',
+  zh_names: '中文姓名',
+  zh_pinyin: '中文词拼音',
+  zh_pinyin_name: '姓名拼音',
+};
+
+function renderAdvice(r, pw) {
+  const ul = $('advice');
+  ul.textContent = '';
+  for (const a of r.feedback) {
+    const li = document.createElement('li');
+    const msg = document.createElement('div');
+    msg.className = 'msg' + (a.message.includes('泄露') ? ' breach' : '');
+    msg.textContent = a.message;
+    const act = document.createElement('div');
+    act.className = 'act';
+    act.textContent = a.action;
+    li.append(msg, act);
+    ul.append(li);
+  }
+  if (!pw) {
+    ul.innerHTML = '<li style="color:var(--muted)">输入口令后给出具体建议</li>';
+  }
+}
+
+/** k-匿名查询：只发前缀，本地比对后缀。 */
+async function checkBreach(prefix, pw) {
+  try {
+    let bucket = breachCache.get(prefix);
+    if (!bucket) {
+      const resp = await fetch(`/range/${prefix}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      bucket = new Map();
+      for (const line of text.split('\n')) {
+        if (!line) continue;
+        const idx = line.indexOf(':');
+        if (idx < 0) continue;
+        bucket.set(line.slice(0, idx), parseInt(line.slice(idx + 1), 10));
+      }
+      breachCache.set(prefix, bucket);
+    }
+    // 完整 SHA-1 由 WASM 一并返回（sha1Hex），无需 WebCrypto。
+    // 本地只比对后缀；服务端从未见到完整哈希，更见不到口令。
+    const fullHex = meter.evaluate(pw).sha1Hex.toUpperCase();
+    const suffix = fullHex.slice(4);
+    const count = bucket.get(suffix) || 0;
+    if (count > 0) {
+      $('status').textContent = `该口令在泄露库中出现 ${count.toLocaleString()} 次`;
+      $('status').style.color = 'var(--weak)';
+    } else {
+      $('status').textContent = `词典：${meter.hasTier2 ? '一级 + 二级' : '仅一级'} · 未在泄露库中命中`;
+      $('status').style.color = '';
+    }
+  } catch (e) {
+    $('status').textContent = `泄露查询失败：${e.message}`;
+  }
+}
+
+function fmtGuesses(g) {
+  if (!isFinite(g)) return '∞';
+  if (g < 1000) return Math.round(g).toString();
+  const units = [[1e12, '万亿'], [1e8, '亿'], [1e4, '万']];
+  for (const [base, name] of units) {
+    if (g >= base) return (g / base).toFixed(g / base < 10 ? 1 : 0) + name;
+  }
+  return Math.round(g).toLocaleString();
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+</script>
+</body>
+</html>
